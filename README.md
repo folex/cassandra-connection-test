@@ -2,8 +2,9 @@
 `./activator run`
 
 ###HOW-TO OPEN IN SUBLIME
-```./activator gen-sublime
-subl ./*.sublime-project```
+```./activator gen-sublime```
+
+```subl ./*.sublime-project```
 
 OR
 
