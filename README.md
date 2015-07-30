@@ -2,8 +2,12 @@
 `./activator run`
 
 ###HOW-TO OPEN IN SUBLIME
-`./activator gen-sublime`
-`subl ./*.sublime-project` || manually open `.sublime-project` file.
+```./activator gen-sublime
+subl ./*.sublime-project```
+
+OR
+
+manually open `.sublime-project` file.
 
 ###Problem
 I want to understand how `PoolingOptions::ConnectionsPerHost` and `PoolingOptions::NewConnectionThreshold` works.
