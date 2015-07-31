@@ -46,17 +46,17 @@ object Main extends App {
     | Total: $totalCount
     | Error %: $errorPercent
     | Success: $successCount
-    | Success max: $successMax
-    | Success min: $successMin
-    | Success avg: $successAvg
-    | Success median: $successMedian
+    | Success max: $successMax ms
+    | Success min: $successMin ms
+    | Success avg: $successAvg ms
+    | Success median: $successMedian ms
     | Failures: $failureCount
-    | Failure max: $failureMax
-    | Failure min: $failureMin
-    | Failure avg: $failureAvg
-    | Failure median: $failureMedian
-    | RAW success: ${successTimes.mkString(", ")}
-    | RAW failures: ${failureTimes.mkString(", ")}
+    | Failure max: $failureMax ms
+    | Failure min: $failureMin ms
+    | Failure avg: $failureAvg ms
+    | Failure median: $failureMedian ms
+    | RAW success (ms): ${successTimes.mkString(", ")}
+    | RAW failures (ms): ${failureTimes.mkString(", ")}
       """.stripMargin
     }
   }
@@ -162,6 +162,9 @@ object Main extends App {
 
   var stat = Stat(List.empty, List.empty)
 
+  printState(session)
+  println(s"Starting test")
+
   for (i <- 1 to num) {
     def req() = {
       val start = now()
@@ -182,8 +185,4 @@ object Main extends App {
   }
   println("====================================")
   println(stat)
-
-
-  // println("Metrics")
-  // val metrics = session.getCluster.getMetrics
 }
