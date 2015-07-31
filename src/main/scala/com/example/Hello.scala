@@ -1,7 +1,7 @@
 package com.example
 
 import java.io.File
-import java.net.InetAddress
+import java.net.{InetAddress,InetSocketAddress}
 import java.nio.file.Paths
 import com.datastax.driver.core._
 import com.datastax.driver.core.policies.ExponentialReconnectionPolicy
@@ -14,6 +14,10 @@ import com.google.common.util.concurrent.{FutureCallback, Futures}
 import scala.collection.JavaConversions._
 import scala.collection.mutable
 import scala.util.Try
+import com.datastax.driver.core.policies.{RoundRobinPolicy, TokenAwarePolicy, WhiteListPolicy, ExponentialReconnectionPolicy}
+import scala.collection.JavaConverters._
+
+
 
 object Main extends App {
   case class Stat(successTimes: List[Long] = List.empty, failureTimes: List[Long] = List.empty) {
@@ -57,6 +61,24 @@ object Main extends App {
     }
   }
 
+  def printState(session: Session) = {
+    val state = session.getState
+    val hosts = state.getConnectedHosts
+    println(
+      s"""
+         | session.isClosed = ${state.getSession.isClosed}
+         | state = $state
+         | state.connectedHosts = ${state.getConnectedHosts.toList.mkString("  |<>|  ")}
+         | Hosts = ${hosts.mkString("  |<>|  ")}
+         | state.inFlightQueries = ${hosts.map(h => h -> state.getInFlightQueries(h)).mkString("  |<>|  ")}
+         | state.trashedConnections = ${hosts.map(h => h -> state.getTrashedConnections(h)).mkString("  |<>|  ")}
+         | state.openConnections = ${hosts.map(h => h -> state.getOpenConnections(h)).mkString("  |<>|  ")}
+         | metrics.openConnections = ${session.getCluster.getMetrics.getOpenConnections.getValue}
+         | metrics.knownHosts = ${session.getCluster.getMetrics.getKnownHosts.getValue}
+         | metrics.connectedToHosts = ${session.getCluster.getMetrics.getConnectedToHosts.getValue}
+       """.stripMargin)
+  }
+
   implicit def future(future: ResultSetFuture): Future[ResultSet] = {
     val promise = Promise[ResultSet]()
 
@@ -76,30 +98,38 @@ object Main extends App {
 
   def now() = scala.compat.Platform.currentTime
 
-  val testCassandraHost = "10.110.0.10"
+  val testCassandraHost = "52.8.109.8"
 
   val endpoints = Array[String](InetAddress.getByName(testCassandraHost).getHostAddress)
+  val endpointsA = Seq(new InetSocketAddress(InetAddress.getByName(testCassandraHost), 9042))
   val port = ProtocolOptions.DEFAULT_PORT
+  val connectionMin = 1
+  val connectionsMax = 10
+  val threshold = 256
+  val readTimeout = 10.seconds
   val cluster = Cluster.builder().addContactPoints(endpoints : _*)
     .withPort(port)
     .withPoolingOptions(new PoolingOptions()
-      .setConnectionsPerHost(HostDistance.LOCAL, 5, 10)
-      .setNewConnectionThreshold(HostDistance.LOCAL, 10)
+      .setConnectionsPerHost(HostDistance.LOCAL, connectionMin, connectionsMax)
+      .setNewConnectionThreshold(HostDistance.LOCAL, threshold)
       .setHeartbeatIntervalSeconds(30)
+      .setIdleTimeoutSeconds(60)
     )
     .withSocketOptions(new SocketOptions()
       .setConnectTimeoutMillis(10000)
-      .setReadTimeoutMillis(30000)
+      .setReadTimeoutMillis(readTimeout.toMillis.toInt)
     )
     .withReconnectionPolicy(new ExponentialReconnectionPolicy(300,3000))
+    .withLoadBalancingPolicy(new WhiteListPolicy(new TokenAwarePolicy(new RoundRobinPolicy()), endpointsA.asJavaCollection))
     .build()
 
+  val keyspace = "folex_test"
   val session = cluster.newSession()
 
   session.init()
-  session.executeAsync("CREATE KEYSPACE IF NOT EXISTS test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}  AND durable_writes = true")
-  session.executeAsync("""
-    CREATE TABLE IF NOT EXISTS test.chats (
+  session.executeAsync(s"CREATE KEYSPACE IF NOT EXISTS $keyspace WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}  AND durable_writes = true")
+  session.executeAsync(s"""
+    CREATE TABLE IF NOT EXISTS ${keyspace}.chats (
     chat_id bigint PRIMARY KEY,
     avatar blob,
     chat_type blob,
@@ -123,8 +153,12 @@ object Main extends App {
   val hosts = session.getState.getConnectedHosts.toList
   hosts.foreach(h => println("HostDistance is " + session.getCluster.getConfiguration.getPolicies.getLoadBalancingPolicy.distance(h)))
 
-  val num = 1000
-  val subnum = 32
+  val num = 5
+  /*
+  * driver will add a connection when the number of concurrent requests is more than
+  * (n - 1) * 128 + PoolingOptions.setNewConnectionThreshold
+  */
+  val subnum = 100
 
   var stat = Stat(List.empty, List.empty)
 
@@ -132,37 +166,24 @@ object Main extends App {
     def req() = {
       val start = now()
       (for {
-        _ <- session.executeAsync("select * from test.chats")
-        _ <- session.executeAsync(s"insert into test.chats (chat_id, avatar, chat_type, name) values (${now()}, textAsBlob('dsds'), textAsBlob('dsdsa'), textAsBlob('dsds'))")
-        _ <- session.executeAsync("select * from test.chats")
+        _ <- session.executeAsync(s"select * from ${keyspace}.chats")
+        _ <- session.executeAsync(s"insert into ${keyspace}.chats (chat_id, avatar, chat_type, name) values (${now()}, textAsBlob('dsds'), textAsBlob('dsdsa'), textAsBlob('dsds'))")
+        _ <- session.executeAsync(s"select * from ${keyspace}.chats")
       } yield Stat().success(now() - start)).recover { case e: Exception =>
         println(e.getMessage())
         Stat().failure(now() - start) }
     }
     val fs = (1 to subnum).map(_ => req())
-    val res = Await.result(Future.sequence(fs), 31.seconds)
+    val res = Await.result(Future.sequence(fs), readTimeout + 2.seconds)
 
     stat += res.foldLeft(Stat())(_ + _)
+
+    printState(session)
   }
   println("====================================")
   println(stat)
-}
 
-  // for (i <- 1 to 10) {
-  //   println(s"\n====================================$i STARTED========================================\n\n\n")
-  //   val state = session.getState
-  //   val hosts = state.getConnectedHosts
-  //   println(
-  //     s"""
-  //        | state = $state
-  //        | state.connectedHosts = ${state.getConnectedHosts.toList.mkString("  |<>|  ")}
-  //        | Hosts = ${hosts.mkString("  |<>|  ")}
-  //        | state.inFlightQueries = ${hosts.map(h => h -> state.getInFlightQueries(h)).mkString("  |<>|  ")}
-  //        | state.trashedConnections = ${hosts.map(h => h -> state.getTrashedConnections(h)).mkString("  |<>|  ")}
-  //        | session.isClosed = ${state.getSession.isClosed}
-  //      """.stripMargin)
-  //   val req = session.executeAsync("select * from test.chats").map(_ => "Success").recover{case e: Exception => "Failure " + e}
-  //   println (Await.result(req, 10.seconds))
-  //   println(s"\n\n\n====================================$i ENDED========================================\n")
-  //   Thread.sleep(5000)
-  // }
+
+  // println("Metrics")
+  // val metrics = session.getCluster.getMetrics
+}
